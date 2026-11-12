@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>深海 · notes</title>
+<style>
+  :root{
+    --abyss:#04101d;
+    --deep:#081a2c;
+    --shoal:#0d2942;
+    --edge:#16436b;
+    --glow:#7fd7ff;
+    --text:#c9dbe8;
+    --dim:#6f8ca4;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:
+      radial-gradient(1200px 600px at 50% -10%, #12405f 0%, transparent 60%),
+      linear-gradient(180deg, var(--deep) 0%, var(--abyss) 55%, #02090f 100%);
+    color:var(--text);
+    font:16px/1.75 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    min-height:100vh;
+  }
+  .wrap{max-width:760px;margin:0 auto;padding:72px 24px 96px}
+  header{margin-bottom:56px}
+  .kicker{
+    color:var(--glow);letter-spacing:.32em;text-transform:uppercase;
+    font-size:12px;opacity:.85;
+  }
+  h1{
+    font-size:34px;line-height:1.25;margin:14px 0 10px;font-weight:600;
+    color:#eaf6ff;letter-spacing:.02em;
+  }
+  .sub{color:var(--dim);font-size:15px;max-width:560px}
+  .rule{
+    height:1px;margin:40px 0;
+    background:linear-gradient(90deg,var(--edge),transparent);
+  }
+  .list{display:flex;flex-direction:column;gap:18px}
+  .card{
+    display:block;text-decoration:none;color:inherit;
+    background:linear-gradient(180deg,rgba(20,58,92,.55),rgba(8,26,44,.55));
+    border:1px solid var(--edge);
+    border-radius:14px;padding:20px 22px;
+    transition:border-color .18s,transform .18s,box-shadow .18s;
+  }
+  .card:hover{
+    border-color:var(--glow);transform:translateY(-2px);
+    box-shadow:0 10px 30px -12px rgba(127,215,255,.45);
+  }
+  .card .meta{
+    display:flex;gap:12px;color:var(--dim);font-size:12px;
+    letter-spacing:.06em;text-transform:uppercase;
+  }
+  .card h2{margin:8px 0 6px;font-size:19px;font-weight:600;color:#e6f4ff}
+  .card p{margin:0;color:var(--dim);font-size:14px}
+  footer{
+    margin-top:72px;padding-top:24px;border-top:1px solid var(--edge);
+    color:var(--dim);font-size:13px;display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;
+  }
+  footer a{color:var(--glow);text-decoration:none}
+  ::selection{background:rgba(127,215,255,.25)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="kicker">depth · notes</div>
+    <h1>深海笔记</h1>
+    <p class="sub">越往下越安静。这里放操作记录、踩过的坑，以及那些跑通之后才敢写下来的结论。</p>
+  </header>
+
+  <div class="rule"></div>
+
+  <main class="list">
+    <a class="card" href="posts/hello.html">
+      <div class="meta"><span>2026-11-12</span><span>·</span><span>开篇</span></div>
+      <h2>第一帖：为什么把日志搬上岸</h2>
+      <p>聊天记录会滚走，磁盘上的 handoff 不会。写清目标、已证事实、下一步，比记住任何细节都值。</p>
+    </a>
+  </main>
+
+  <footer>
+    <span>静态托管于 GitHub Pages · 单页手写，无构建</span>
+    <a href="https://github.com/762yje/blog">源码仓库</a>
+  </footer>
+</div>
+</body>
+</html>
