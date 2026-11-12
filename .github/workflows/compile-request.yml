@@ -130,8 +130,10 @@ jobs:
           $lines = $env:BUILD_COMMANDS -split "`n" | Where-Object { $_.Trim() -ne '' }
           foreach ($line in $lines) {
             Write-Host "==> $line"
+            $global:LASTEXITCODE = 0
             Invoke-Expression $line
-            if ($LASTEXITCODE -ne 0) { throw "build command failed (exit $LASTEXITCODE): $line" }
+            # 纯 PowerShell 命令不会设置 LASTEXITCODE，只有外部程序才会；两者都放行
+            if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { throw "build command failed (exit $LASTEXITCODE): $line" }
           }
 
       - name: Package
