@@ -1,0 +1,98 @@
+# daily-trending.yml — 每天 08:00（北京）生成一篇"今日热门开源项目"
+#
+# 数据源是 GitHub 官方 REST API（/search/repositories），不抓任何第三方网页，
+# 因此没有反爬、没有越界扫描，也不需要额外密钥 —— 只用仓库自带的 GITHUB_TOKEN。
+# 生成内容：posts/trending-<date>.md（正文）、posts/trending-<date>.html（Pages 页面）、
+# index.html 顶部一张新卡片（只保留最近 5 条自动日报，避免首页无限增长）。
+#
+# 频率：cron 0 0 * * * = 每天 00:00 UTC = 08:00 Asia/Shanghai，一天一次。
+
+name: daily-trending
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: daily-trending
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      message: ${{ steps.commit.outputs.message }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Generate post
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WINDOW_DAYS: '7'
+          MIN_STARS: '100'
+          LIMIT: '10'
+        run: |
+          set -euo pipefail
+          python3 tools/trending.py | tee trending.out
+
+      - name: Commit and push
+        id: commit
+        run: |
+          set -uo pipefail
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "message=no changes today" >> "$GITHUB_OUTPUT"
+            echo "nothing to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "chore(trending): daily post $(date -u +%F) [skip ci]"
+          for i in 1 2 3; do
+            if git push; then echo "pushed on attempt $i"; break; fi
+            git pull --rebase --autostash || true
+            sleep 10
+          done
+          echo "message=$(grep -m1 'top=' trending.out || echo 'post updated')" >> "$GITHUB_OUTPUT"
+
+      - name: Step summary
+        if: always()
+        env:
+          COMMIT_MSG: ${{ steps.commit.outputs.message }}
+        run: |
+          {
+            echo "### daily-trending"
+            echo ''
+            sed -n '1,6p' trending.out 2>/dev/null || echo 'no output captured'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  notify:
+    needs: publish
+    if: always()
+    uses: ./.github/workflows/notify.yml
+    with:
+      workflow_name: daily-trending
+      status: ${{ needs.publish.result }}
+      title: 每日热门开源项目
+      message: ${{ needs.publish.outputs.message }}
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets:
+      NOTIFY_SCT_KEY: ${{ secrets.NOTIFY_SCT_KEY }}
+      NOTIFY_PUSHPLUS_TOKEN: ${{ secrets.NOTIFY_PUSHPLUS_TOKEN }}
+      NOTIFY_SMTP_HOST: ${{ secrets.NOTIFY_SMTP_HOST }}
+      NOTIFY_SMTP_PORT: ${{ secrets.NOTIFY_SMTP_PORT }}
+      NOTIFY_SMTP_USER: ${{ secrets.NOTIFY_SMTP_USER }}
+      NOTIFY_SMTP_PASS: ${{ secrets.NOTIFY_SMTP_PASS }}
+      NOTIFY_SMTP_TO: ${{ secrets.NOTIFY_SMTP_TO }}

@@ -1,0 +1,211 @@
+# compile-request.yml — 把"编译"这件事搬到云端（GitHub 的托管 runner），不占本地 CPU
+#
+# 用法：Actions → compile-request → Run workflow，填四个输入：
+#   repo_url        要编译的公开仓库（必须 https://github.com/...）
+#   ref             分支/标签/提交，留空用默认分支
+#   toolchain       none / rust / go / node / cmake / mingw / dotnet
+#   build_commands  构建命令（多行，pwsh 语法，在源码根目录执行）
+#   artifact_path   要打包的产物路径（文件或目录，默认 .）
+#
+# 交付方式：产物打包成 zip → 上传为 run artifact（14 天）+ 发布到本次 build 的
+# Release 资产（永久下载链接）。两条路都不占本地资源，也不需要本地等待编译。
+#
+# 边界：只允许仓库所有者手动触发（避免公开仓库被人当免费算力）；
+#       repo_url 必须是 github.com 的 https 地址，不接受任意主机。
+
+name: compile-request
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_url:
+        description: 公开仓库地址（https://github.com/<owner>/<repo>）
+        required: true
+        type: string
+      ref:
+        description: 分支 / 标签 / 提交（留空 = 默认分支）
+        required: false
+        type: string
+        default: ''
+      toolchain:
+        description: 需要的工具链
+        required: true
+        type: choice
+        options: [none, rust, go, node, cmake, mingw, dotnet]
+        default: none
+      build_commands:
+        description: 构建命令（多行；在源码根目录执行）
+        required: true
+        type: string
+      artifact_path:
+        description: 要打包的产物路径（相对源码根目录，文件或目录）
+        required: false
+        type: string
+        default: .
+      package_name:
+        description: 压缩包名（不含 .zip）
+        required: false
+        type: string
+        default: build-output
+
+permissions:
+  contents: write
+
+concurrency:
+  group: compile-request
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    if: github.actor == github.repository_owner
+    outputs:
+      asset: ${{ steps.publish.outputs.asset }}
+    steps:
+      - name: Validate repo_url
+        id: target
+        shell: pwsh
+        env:
+          REPO_URL: ${{ inputs.repo_url }}
+        run: |
+          if ($env:REPO_URL -notmatch '^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(\.git)?$') {
+            throw "repo_url must look like https://github.com/<owner>/<repo>"
+          }
+          $slug = "$($Matches[1])/$($Matches[2])"
+          "slug=$slug" >> $env:GITHUB_OUTPUT
+          Write-Host "target=$slug"
+
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.target.outputs.slug }}
+          ref: ${{ inputs.ref }}
+          path: src
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install Rust
+        if: inputs.toolchain == 'rust'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Go
+        if: inputs.toolchain == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: false
+
+      - name: Install Node
+        if: inputs.toolchain == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+
+      - name: Install cmake + ninja
+        if: inputs.toolchain == 'cmake'
+        uses: lukka/get-cmake@latest
+
+      - name: Install mingw-w64 (MSYS2)
+        if: inputs.toolchain == 'mingw'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          install: base-devel mingw-w64-ucrt-x86_64-gcc
+
+      - name: Install .NET SDK
+        if: inputs.toolchain == 'dotnet'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build
+        working-directory: src
+        shell: pwsh
+        env:
+          BUILD_COMMANDS: ${{ inputs.build_commands }}
+        run: |
+          # 命令由仓库所有者显式提供，这里按多行逐条执行并保留退出码
+          $ErrorActionPreference = 'Continue'
+          $lines = $env:BUILD_COMMANDS -split "`n" | Where-Object { $_.Trim() -ne '' }
+          foreach ($line in $lines) {
+            Write-Host "==> $line"
+            Invoke-Expression $line
+            if ($LASTEXITCODE -ne 0) { throw "build command failed (exit $LASTEXITCODE): $line" }
+          }
+
+      - name: Package
+        id: package
+        shell: pwsh
+        env:
+          ARTIFACT_PATH: ${{ inputs.artifact_path }}
+          PACKAGE_NAME: ${{ inputs.package_name }}
+        run: |
+          $target = Join-Path 'src' $env:ARTIFACT_PATH
+          if (-not (Test-Path $target)) { throw "artifact_path not found: $($env:ARTIFACT_PATH)" }
+          $name = if ($env:PACKAGE_NAME) { $env:PACKAGE_NAME } else { 'build-output' }
+          $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          if ((Get-Item $target).PSIsContainer) {
+            7z a -tzip -mx=9 $zip (Join-Path $target '*') | Out-Null
+          } else {
+            7z a -tzip -mx=9 $zip $target | Out-Null
+          }
+          if (-not (Test-Path $zip)) { throw "packaging failed" }
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          $size = (Get-Item $zip).Length
+          "zip=$zip" >> $env:GITHUB_OUTPUT
+          "name=$name.zip" >> $env:GITHUB_OUTPUT
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
+          "size=$size" >> $env:GITHUB_OUTPUT
+          Write-Host "package=$name.zip bytes=$size sha256=$hash"
+
+      - name: Upload run artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: ${{ steps.package.outputs.zip }}
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Publish release asset
+        id: publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ZIP: ${{ steps.package.outputs.zip }}
+          NAME: ${{ steps.package.outputs.name }}
+          SHA: ${{ steps.package.outputs.sha256 }}
+          SIZE: ${{ steps.package.outputs.size }}
+        run: |
+          $tag = "build-" + (Get-Date -Format 'yyyyMMdd-HHmmss')
+          $body = @"
+          source: ${{ inputs.repo_url }}
+          ref: ${{ inputs.ref }}
+          toolchain: ${{ inputs.toolchain }}
+          sha256: $env:SHA
+          size: $env:SIZE
+          built on: windows-latest (GitHub-hosted runner)
+          "@
+          $body | Out-File -FilePath $env:RUNNER_TEMP\notes.md -Encoding utf8
+          gh release create $tag --repo $env:GITHUB_REPOSITORY --title "build $tag" `
+            --notes-file $env:RUNNER_TEMP\notes.md $env:ZIP
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
+          $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$tag/$env:NAME"
+          "asset=$url" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          Write-Host "download: $url"
+
+      - name: Step summary
+        if: always()
+        shell: pwsh
+        run: |
+          @"
+          ### compile-request
+          - 仓库: ${{ inputs.repo_url }}
+          - 引用: ${{ inputs.ref }}
+          - 工具链: ${{ inputs.toolchain }}
+          - 压缩包: ${{ steps.package.outputs.name }}
+          - sha256: ${{ steps.package.outputs.sha256 }}
+          - 永久链接: ${{ steps.publish.outputs.asset }}
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

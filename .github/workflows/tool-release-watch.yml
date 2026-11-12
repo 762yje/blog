@@ -1,0 +1,219 @@
+# tool-release-watch.yml — 盯上游发版 → 云端编译 Windows 免安装版 → 存进私库 Release
+#
+# 三种工具先跑一轮（可继续往 matrix 里加）：ripgrep / fd（Rust）、fzf（Go）。
+# 流程：查上游 latest tag → 与 .state/tool-watch.json 里的记录比对 → 变了才下载源码、
+# 在 windows-latest 上从源码编译 → 打包 zip + sha256 → 上传到私库滚动 Release
+# `tools-latest`（覆盖同名资产）→ 更新 state 并提交。
+#
+# 密钥：PRIVATE_REPO_TOKEN = 一个有 repo 权限的 PAT，只用于往私库 Release 上传。
+# 频率：cron 0 3 * * 1 = 每周一 03:00 UTC = 11:00 Asia/Shanghai，一周一次。
+# 产物落地：本机执行 dsh-cloud 的 scripts/install-from-release.ps1 即可安装。
+
+name: tool-release-watch
+
+on:
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      tools:
+        description: 只跑指定工具（逗号分隔，留空=全部）
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: tool-release-watch
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - tool: ripgrep
+            repo: BurntSushi/ripgrep
+            toolchain: rust
+            build: cargo build --release --bin rg
+            binary: target/release/rg.exe
+          - tool: fd
+            repo: sharkdp/fd
+            toolchain: rust
+            build: cargo build --release
+            binary: target/release/fd.exe
+          - tool: fzf
+            repo: junegunn/fzf
+            toolchain: go
+            build: go build -o fzf.exe
+            binary: fzf.exe
+    outputs:
+      built: ${{ steps.state.outputs.changed }}
+    steps:
+      - name: Checkout this repo (state file)
+        uses: actions/checkout@v4
+        with:
+          path: self
+
+      - name: Read upstream latest tag and compare with state
+        id: state
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TOOL: ${{ matrix.tool }}
+          REPO: ${{ matrix.repo }}
+        run: |
+          $tag = gh api "repos/$env:REPO/releases/latest" --jq .tag_name 2>$null
+          if (-not $tag) { throw "no release found for $env:REPO" }
+          $statePath = Join-Path 'self' '.state/tool-watch.json'
+          $state = if (Test-Path $statePath) { Get-Content $statePath -Raw | ConvertFrom-Json } else { [pscustomobject]@{} }
+          $prev = $state.$($env:TOOL)
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          if ($prev -eq $tag) {
+            "changed=false" >> $env:GITHUB_OUTPUT
+            Write-Host "$($env:TOOL): up to date at $tag"
+          } else {
+            "changed=true" >> $env:GITHUB_OUTPUT
+            Write-Host "$($env:TOOL): $prev -> $tag"
+          }
+
+      - name: Checkout upstream source at the new tag
+        if: steps.state.outputs.changed == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ steps.state.outputs.tag }}
+          path: src
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install Rust
+        if: steps.state.outputs.changed == 'true' && matrix.toolchain == 'rust'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Go
+        if: steps.state.outputs.changed == 'true' && matrix.toolchain == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: false
+
+      - name: Build from source
+        if: steps.state.outputs.changed == 'true'
+        working-directory: src
+        shell: pwsh
+        env:
+          BUILD_CMD: ${{ matrix.build }}
+        run: |
+          Invoke-Expression $env:BUILD_CMD
+          if ($LASTEXITCODE -ne 0) { throw "build failed: $env:BUILD_CMD" }
+
+      - name: Package and hash
+        if: steps.state.outputs.changed == 'true'
+        id: pack
+        shell: pwsh
+        env:
+          TOOL: ${{ matrix.tool }}
+          BINARY: ${{ matrix.binary }}
+          TAG: ${{ steps.state.outputs.tag }}
+        run: |
+          $bin = Join-Path 'src' $env:BINARY
+          if (-not (Test-Path $bin)) { throw "binary not found: $($env:BINARY)" }
+          $safeTag = ($env:TAG -replace '[^A-Za-z0-9._-]', '_')
+          $name = "$($env:TOOL)-$safeTag-windows-x64.zip"
+          $zip = Join-Path $env:RUNNER_TEMP $name
+          $exeDir = Split-Path $bin -Parent
+          Push-Location $exeDir
+          7z a -tzip -mx=9 $zip ((Split-Path $bin -Leaf)) | Out-Null
+          Pop-Location
+          if (-not (Test-Path $zip)) { throw "zip not created" }
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          "zip=$zip" >> $env:GITHUB_OUTPUT
+          "name=$name" >> $env:GITHUB_OUTPUT
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
+          "size=$((Get-Item $zip).Length)" >> $env:GITHUB_OUTPUT
+          Write-Host "$name sha256=$hash"
+
+      - name: Publish to private rolling release
+        if: steps.state.outputs.changed == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ZIP: ${{ steps.pack.outputs.zip }}
+          NAME: ${{ steps.pack.outputs.name }}
+          SHA: ${{ steps.pack.outputs.sha256 }}
+          TOOL: ${{ matrix.tool }}
+          TAG: ${{ steps.state.outputs.tag }}
+        run: |
+          if (-not $env:GH_TOKEN) { throw "missing secret PRIVATE_REPO_TOKEN" }
+          $privateRepo = '762yje/dsh-cloud'
+          $note = "tool: $($env:TOOL)`nupstream: $($env:TAG)`nsha256: $($env:SHA)`nbuilt: windows-latest from source"
+          $note | Out-File -FilePath $env:RUNNER_TEMP\note.txt -Encoding utf8
+          $exists = gh release view tools-latest -R $privateRepo --json tagName 2>$null
+          if (-not $exists) {
+            gh release create tools-latest -R $privateRepo --title 'tools-latest' `
+              --notes-file $env:RUNNER_TEMP\note.txt
+          }
+          gh release upload tools-latest -R $privateRepo $env:ZIP --clobber
+          if ($LASTEXITCODE -ne 0) { throw "release upload failed" }
+          Write-Host "uploaded $($env:NAME) to $privateRepo tools-latest"
+
+      - name: Update state file
+        if: steps.state.outputs.changed == 'true'
+        shell: pwsh
+        env:
+          TOOL: ${{ matrix.tool }}
+          TAG: ${{ steps.state.outputs.tag }}
+          SHA: ${{ steps.pack.outputs.sha256 }}
+        run: |
+          $statePath = Join-Path 'self' '.state/tool-watch.json'
+          $obj = if (Test-Path $statePath) { Get-Content $statePath -Raw | ConvertFrom-Json } else { [pscustomobject]@{} }
+          $obj | Add-Member -NotePropertyName $env:TOOL -NotePropertyValue $env:TAG -Force
+          $obj | Add-Member -NotePropertyName ($env:TOOL + '_sha256') -NotePropertyValue $env:SHA -Force
+          $obj | ConvertTo-Json -Depth 4 | Out-File -FilePath $statePath -Encoding utf8
+          Write-Host "state updated: $($env:TOOL)=$($env:TAG)"
+
+      - name: Commit state
+        if: steps.state.outputs.changed == 'true'
+        working-directory: self
+        shell: pwsh
+        env:
+          TOOL: ${{ matrix.tool }}
+          TAG: ${{ steps.state.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .state
+          git commit -m "chore(watch): $($env:TOOL) $($env:TAG) [skip ci]"
+          for ($i = 1; $i -le 3; $i++) {
+            git push 2>$null
+            if ($LASTEXITCODE -eq 0) { Write-Host "pushed"; exit 0 }
+            git pull --rebase --autostash 2>$null
+            Start-Sleep -Seconds 10
+          }
+          throw "state push failed after 3 attempts"
+
+  notify:
+    needs: build
+    if: always()
+    uses: ./.github/workflows/notify.yml
+    with:
+      workflow_name: tool-release-watch
+      status: ${{ needs.build.result }}
+      title: 工具上游更新与云端编译
+      message: ${{ needs.build.result }}（详见各 matrix 作业日志）
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets:
+      NOTIFY_SCT_KEY: ${{ secrets.NOTIFY_SCT_KEY }}
+      NOTIFY_PUSHPLUS_TOKEN: ${{ secrets.NOTIFY_PUSHPLUS_TOKEN }}
+      NOTIFY_SMTP_HOST: ${{ secrets.NOTIFY_SMTP_HOST }}
+      NOTIFY_SMTP_PORT: ${{ secrets.NOTIFY_SMTP_PORT }}
+      NOTIFY_SMTP_USER: ${{ secrets.NOTIFY_SMTP_USER }}
+      NOTIFY_SMTP_PASS: ${{ secrets.NOTIFY_SMTP_PASS }}
+      NOTIFY_SMTP_TO: ${{ secrets.NOTIFY_SMTP_TO }}

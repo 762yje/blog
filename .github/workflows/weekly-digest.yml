@@ -1,0 +1,97 @@
+# weekly-digest.yml — 每周二/四/六 09:00（北京）汇总技术/安全文章
+#
+# 只用公开 RSS/Atom 订阅，每源一次请求、15 秒超时，收到 4xx/超时就记一笔然后跳过，
+# 不换 UA、不重试、不走镜像（这是任务里的硬边界）。
+# 产出两件东西：
+#   digest/<date>.md            给人看的摘要
+#   docs/self-review/<date>.md  机器筛出的"值得学什么"，全部待人工确认，不自动改代码
+#
+# 频率：cron 0 1 * * 2,4,6 = 周二/四/六 01:00 UTC = 09:00 Asia/Shanghai。
+# 正好一周三次，不含任何分钟级轮询。
+
+name: weekly-digest
+
+on:
+  schedule:
+    - cron: '0 1 * * 2,4,6'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: weekly-digest
+  cancel-in-progress: false
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      message: ${{ steps.commit.outputs.message }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Collect and summarize
+        run: |
+          set -uo pipefail
+          python3 tools/digest.py | tee digest.out
+          status=${PIPESTATUS[0]}
+          echo "digest_exit=$status"
+          exit "$status"
+
+      - name: Commit and push
+        id: commit
+        run: |
+          set -uo pipefail
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "message=no changes" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "chore(digest): weekly technical digest $(date -u +%F) [skip ci]"
+          for i in 1 2 3; do
+            if git push; then echo "pushed on attempt $i"; break; fi
+            git pull --rebase --autostash || true
+            sleep 10
+          done
+          echo "message=$(grep -m1 'items=' digest.out || echo 'digest updated')" >> "$GITHUB_OUTPUT"
+
+      - name: Step summary
+        if: always()
+        run: |
+          {
+            echo "### weekly-digest"
+            echo ''
+            echo '```'
+            cat digest.out 2>/dev/null || echo 'no output captured'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  notify:
+    needs: digest
+    if: always()
+    uses: ./.github/workflows/notify.yml
+    with:
+      workflow_name: weekly-digest
+      status: ${{ needs.digest.result }}
+      title: 每周技术摘要
+      message: ${{ needs.digest.outputs.message }}
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets:
+      NOTIFY_SCT_KEY: ${{ secrets.NOTIFY_SCT_KEY }}
+      NOTIFY_PUSHPLUS_TOKEN: ${{ secrets.NOTIFY_PUSHPLUS_TOKEN }}
+      NOTIFY_SMTP_HOST: ${{ secrets.NOTIFY_SMTP_HOST }}
+      NOTIFY_SMTP_PORT: ${{ secrets.NOTIFY_SMTP_PORT }}
+      NOTIFY_SMTP_USER: ${{ secrets.NOTIFY_SMTP_USER }}
+      NOTIFY_SMTP_PASS: ${{ secrets.NOTIFY_SMTP_PASS }}
+      NOTIFY_SMTP_TO: ${{ secrets.NOTIFY_SMTP_TO }}

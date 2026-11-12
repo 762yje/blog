@@ -1,0 +1,120 @@
+# housekeeping.yml — 公库侧的定时清理
+#
+# 清什么：
+#   1) 30 天前的 run artifact（编译产物、诊断包等临时构建物）
+#   2) 30 天前的 workflow run（日志）
+#   3) 30 天前的 build-* Release（compile-request 留下的旧编译包）
+# 不清什么：任何 tag 指向的源文件、guard 用的滚动 Release、最近 30 天的东西。
+#
+# 安全阀：默认 DRY_RUN=true，只打印要删什么；要真删必须在 workflow_dispatch 里
+# 把 confirm 填成 DELETE。定时任务只做 dry-run，避免哪天批量误删。
+#
+# 频率：cron 0 4 1 * * = 每月 1 日 04:00 UTC = 12:00 Asia/Shanghai。
+
+name: housekeeping
+
+on:
+  schedule:
+    - cron: '0 4 1 * *'
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 填 DELETE 才真正删除；留空或其它值 = 只演练
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: housekeeping
+  cancel-in-progress: false
+
+env:
+  KEEP_DAYS: '30'
+  KEEP_BUILD_RELEASES: '3'
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      message: ${{ steps.sweep.outputs.summary }}
+    steps:
+      - name: Sweep
+        id: sweep
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.confirm }}" = "DELETE" ]; then
+            DRY_RUN=false
+          else
+            DRY_RUN=true
+          fi
+          cutoff=$(date -u -d "-${KEEP_DAYS} days" +%Y-%m-%dT%H:%M:%SZ)
+          echo "dry_run=$DRY_RUN cutoff=$cutoff"
+
+          artifacts=0; runs=0; releases=0
+
+          # 1) artifacts
+          while read -r id created; do
+            [ -z "$id" ] && continue
+            if [[ "$created" < "$cutoff" ]]; then
+              artifacts=$((artifacts+1))
+              echo "artifact $id created $created"
+              [ "$DRY_RUN" = false ] && gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id" >/dev/null
+            fi
+          done < <(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
+                     --jq '.artifacts[] | "\(.id) \(.created_at)"')
+
+          # 2) workflow runs (logs) — only finished ones
+          while read -r id created status; do
+            [ -z "$id" ] && continue
+            [ "$status" != "completed" ] && continue
+            if [[ "$created" < "$cutoff" ]]; then
+              runs=$((runs+1))
+              [ "$DRY_RUN" = false ] && gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/runs/$id" >/dev/null
+            fi
+          done < <(gh api "repos/$GITHUB_REPOSITORY/actions/runs?per_page=100&status=completed" \
+                     --jq '.workflow_runs[] | "\(.id) \(.created_at) \(.status)"')
+
+          # 3) old build-* releases, keep the newest KEEP_BUILD_RELEASES
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
+          mapfile -t stale < <(jq -r --arg cutoff "$cutoff" '
+              .[] | select(.tag_name | startswith("build-")) | select(.created_at < $cutoff) | .tag_name' \
+              "$RUNNER_TEMP/releases.json")
+          releases=${#stale[@]}
+          echo "stale build releases: ${stale[*]:-none}"
+          if [ "$DRY_RUN" = false ] && [ "$releases" -gt "$KEEP_BUILD_RELEASES" ]; then
+            for tag in "${stale[@]:$KEEP_BUILD_RELEASES}"; do
+              echo "delete release $tag"
+              gh release delete "$tag" -R "$GITHUB_REPOSITORY" --cleanup-tag --yes
+            done
+          fi
+
+          summary="artifacts=$artifacts runs=$runs old_build_releases=$releases dry_run=$DRY_RUN"
+          echo "summary=$summary" >> "$GITHUB_OUTPUT"
+          echo "$summary" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Step summary
+        if: always()
+        run: |
+          echo "### housekeeping" >> "$GITHUB_STEP_SUMMARY"
+          echo "保留期 ${KEEP_DAYS} 天；定时任务一律 dry-run。" >> "$GITHUB_STEP_SUMMARY"
+
+  notify:
+    needs: sweep
+    if: always() && github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/notify.yml
+    with:
+      workflow_name: housekeeping
+      status: ${{ needs.sweep.result }}
+      title: 公库清理
+      message: ${{ needs.sweep.outputs.message }}
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    secrets:
+      NOTIFY_SCT_KEY: ${{ secrets.NOTIFY_SCT_KEY }}
+      NOTIFY_PUSHPLUS_TOKEN: ${{ secrets.NOTIFY_PUSHPLUS_TOKEN }}

@@ -1,0 +1,112 @@
+# notify.yml — notification fan-out shared by this repo's scheduled workflows.
+#
+# Caller passes the *result* of its work job; this workflow decides what to send.
+# A channel is used only when its secret exists, so nothing breaks before the
+# operator picks one. The GitHub Issue channel needs no secret at all.
+#
+# Three consecutive failures of the same workflow escalate to an [ALERT] issue
+# plus (when SMTP secrets exist) an email, then the streak resets.
+
+name: notify
+
+on:
+  workflow_call:
+    inputs:
+      workflow_name:
+        description: name used as the streak key
+        required: true
+        type: string
+      status:
+        description: result of the caller's work job (success / failure / cancelled)
+        required: true
+        type: string
+      title:
+        description: headline shown in the notification
+        required: false
+        type: string
+        default: ''
+      message:
+        description: one-line detail
+        required: false
+        type: string
+        default: ''
+      run_url:
+        description: link to the caller's run
+        required: false
+        type: string
+        default: ''
+    secrets:
+      NOTIFY_SCT_KEY:
+        required: false
+      NOTIFY_PUSHPLUS_TOKEN:
+        required: false
+      NOTIFY_SMTP_HOST:
+        required: false
+      NOTIFY_SMTP_PORT:
+        required: false
+      NOTIFY_SMTP_USER:
+        required: false
+      NOTIFY_SMTP_PASS:
+        required: false
+      NOTIFY_SMTP_TO:
+        required: false
+
+permissions:
+  contents: write
+  issues: write
+
+# Serialize the streak file: two failing workflows must not race on it.
+concurrency:
+  group: notify-state
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Send
+        id: send
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATUS: ${{ inputs.status }}
+          WF_NAME: ${{ inputs.workflow_name }}
+          TITLE: ${{ inputs.title }}
+          MESSAGE: ${{ inputs.message }}
+          RUN_URL: ${{ inputs.run_url }}
+          SCT_KEY: ${{ secrets.NOTIFY_SCT_KEY }}
+          PUSHPLUS_TOKEN: ${{ secrets.NOTIFY_PUSHPLUS_TOKEN }}
+          SMTP_HOST: ${{ secrets.NOTIFY_SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.NOTIFY_SMTP_PORT }}
+          SMTP_USER: ${{ secrets.NOTIFY_SMTP_USER }}
+          SMTP_PASS: ${{ secrets.NOTIFY_SMTP_PASS }}
+          SMTP_TO: ${{ secrets.NOTIFY_SMTP_TO }}
+        run: |
+          set -uo pipefail
+          python3 tools/notify.py | tee notify.out
+
+      - name: Persist streak state
+        run: |
+          set -uo pipefail
+          if git diff --quiet -- .notify; then
+            echo "state unchanged"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .notify
+          git commit -m "chore(notify): streak state [skip ci]"
+          for i in 1 2 3; do
+            if git push; then echo "pushed on attempt $i"; exit 0; fi
+            git pull --rebase --autostash || true
+            sleep 10
+          done
+          echo "::warning::could not push streak state"
