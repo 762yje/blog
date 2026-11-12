@@ -1,0 +1,44 @@
+name: guard
+
+# Reuses the shared scanner from the public dsh-build-lab repo so every public
+# repo enforces the same rule set. Scans this repo's tree and full history.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: guard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout this repo (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout shared guard scanner
+        uses: actions/checkout@v4
+        with:
+          repository: 762yje/dsh-build-lab
+          path: .guard-src
+          fetch-depth: 1
+
+      - name: Scan
+        shell: bash
+        run: |
+          set -uo pipefail
+          cp .guard-src/guard/scan-secrets.sh ./scan-secrets.sh
+          bash ./scan-secrets.sh
+          rm -f ./scan-secrets.sh
