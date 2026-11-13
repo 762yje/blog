@@ -11,5 +11,4 @@ jobs:
     uses: ./.github/workflows/zz-call.yml
     with:
       workflow_name: zz-probe
-      status: success
     secrets: inherit
