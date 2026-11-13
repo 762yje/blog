@@ -1,0 +1,88 @@
+# notify.yml — 通知扇出，被本仓库各定时工作流用 workflow_call 复用。
+#
+# 通道已收敛为「邮件」一项（Server酱 / PushPlus 已下线）：
+#   - 邮件可用（NOTIFY_SMTP_* 五个 secrets 齐全）→ 发邮件，成功与失败都发。
+#   - 邮件未配置 / 发送失败 → 降级建一条 GitHub Issue（零配置通道），消息不丢。
+#   - 两者都不成 → 只打日志，绝不让通知失败把工作流判成 failure。
+#
+# 同一工作流连续失败 3 次：主题加 [ALERT]，正文附升级说明，然后计数归零防轰炸。
+# 计数器落在 .notify/state.json，由本工作流自己提交回仓库（带 [skip ci]）。
+
+name: notify
+
+on:
+  workflow_call:
+    inputs:
+      workflow_name:
+        description: 连续失败计数的键（一般用调用方工作流名）
+        required: true
+        type: string
+      status:
+        description: 调用方工作结果（success / failure / cancelled）
+        required: true
+        type: string
+      title:
+        description: 通知标题（留空则由工作流名 + 结果拼出来）
+        required: false
+        type: string
+        default: ''
+      message:
+        description: 一行细节
+        required: false
+        type: string
+        default: ''
+      run_url:
+        description: 调用方的 run 链接
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+  issues: write
+
+# 串行化计数器文件：两个同时失败的工作流不能在这里抢写。
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Send
+        id: send
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATUS: ${{ inputs.status }}
+          WF_NAME: ${{ inputs.workflow_name }}
+          TITLE: ${{ inputs.title }}
+          MESSAGE: ${{ inputs.message }}
+          RUN_URL: ${{ inputs.run_url }}
+        run: |
+          set -uo pipefail
+          python3 tools/notify.py | tee notify.out
+
+      - name: Persist streak state
+        run: |
+          set -uo pipefail
+          if git diff --quiet -- .notify; then
+            echo "state unchanged"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .notify
+          git commit -m "chore(notify): streak state [skip ci]"
+          for i in 1 2 3; do
+            if git push; then echo "pushed on attempt $i"; exit 0; fi
+            git pull --rebase --autostash || true
+            sleep 10
+          done
+          echo "::warning::could not push streak state"
