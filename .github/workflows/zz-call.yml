@@ -1,0 +1,12 @@
+name: zz-call
+on:
+  workflow_call:
+    inputs:
+      workflow_name:
+        type: string
+        required: true
+jobs:
+  n:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "called with ${{ inputs.workflow_name }}"
