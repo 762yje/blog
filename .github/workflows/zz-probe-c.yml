@@ -1,0 +1,9 @@
+name: zz-probe-c
+on:
+  workflow_dispatch:
+jobs:
+  n:
+    uses: ./.github/workflows/zz-call2.yml
+    with:
+      workflow_name: zz-probe-c
+      status: success
