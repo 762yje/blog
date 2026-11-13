@@ -1,0 +1,12 @@
+{
+  "fzf": {
+    "asset": "dsh-fzf-0.75.0-windows-x64.zip",
+    "exe_path": "fzf.exe",
+    "repo": "junegunn/fzf",
+    "sha256": "f22925fc85dc63d47f499d3891bbd365e7efaeac7d86ee00c89dd50848f08e95",
+    "size": 2557424,
+    "tag": "v0.75.0",
+    "updated_at": "2026-11-13T12:20:42Z",
+    "uploaded": false
+  }
+}
