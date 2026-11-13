@@ -185,9 +185,14 @@ jobs:
           tar xf jq-src.tar.gz
           mkdir -p dist-jq
           cd "${TAG}"
-          ./configure --prefix=/ucrt64 --with-oniguruma=builtin --disable-maintainer-mode CFLAGS='-O2 -DNDEBUG'
+          ./configure --prefix=/ucrt64 --with-oniguruma=builtin --disable-maintainer-mode --disable-shared CFLAGS='-O2 -DNDEBUG' LDFLAGS='-static'
           make -j"$(nproc)"
-          cp ./jq.exe ../dist-jq/jq.exe
+          bin=""
+          for c in ./jq.exe ./.libs/jq.exe ./jq ./.libs/jq; do
+            if [ -f "$c" ]; then bin="$c"; break; fi
+          done
+          if [ -z "$bin" ]; then echo "::error::jq 编译产物没找到"; ls -la . .libs 2>/dev/null | head -40; exit 1; fi
+          cp "$bin" ../dist-jq/jq.exe
           ../dist-jq/jq.exe --version
 
       - name: Collect binary
@@ -201,6 +206,18 @@ jobs:
           mkdir -p dist
           cp "${SRC}" "dist/${EXE}"
           ls -l dist
+
+      # 脱离 MSYS2 环境再跑一次：证明打出来的 exe 在裸 Windows 上能起来（不是只靠 /ucrt64 的 PATH）。
+      - name: 独立运行自检
+        if: steps.gate.outputs.skip != 'true'
+        shell: pwsh
+        env:
+          EXE: ${{ matrix.exe }}
+        run: |
+          $exe = Join-Path 'dist' $env:EXE
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) { throw "$env:EXE 在裸环境里跑不起来（exit $LASTEXITCODE）" }
+          Write-Host "$env:EXE 独立运行 OK"
 
       - name: Package and hash
         id: pack
