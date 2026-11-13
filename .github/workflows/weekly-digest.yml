@@ -19,6 +19,7 @@ on:
 permissions:
   contents: write
   actions: read
+  issues: write
 
 concurrency:
   group: weekly-digest

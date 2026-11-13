@@ -50,9 +50,6 @@ on:
       NOTIFY_SMTP_FROM:
         required: false
 
-permissions:
-  contents: write
-  issues: write
 
 # 串行化计数器文件：两个同时失败的工作流不能在这里抢写。
 concurrency:

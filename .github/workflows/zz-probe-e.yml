@@ -1,9 +1,0 @@
-name: zz-probe-e
-on:
-  workflow_dispatch:
-jobs:
-  n:
-    uses: ./.github/workflows/zz-call3.yml
-    with:
-      workflow_name: zz-probe-e
-      status: success

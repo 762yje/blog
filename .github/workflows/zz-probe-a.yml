@@ -1,8 +1,0 @@
-name: zz-probe-a
-on:
-  workflow_dispatch:
-jobs:
-  n:
-    uses: ./.github/workflows/zz-call3.yml
-    with:
-      workflow_name: zz-probe-a
