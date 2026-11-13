@@ -115,6 +115,4 @@ jobs:
       title: 公库清理
       message: ${{ needs.sweep.outputs.message }}
       run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-    secrets:
-      NOTIFY_SCT_KEY: ${{ secrets.NOTIFY_SCT_KEY }}
-      NOTIFY_PUSHPLUS_TOKEN: ${{ secrets.NOTIFY_PUSHPLUS_TOKEN }}
+    secrets: inherit

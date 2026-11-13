@@ -1,34 +1,38 @@
 #!/usr/bin/env python3
-"""Notify step for scheduled workflows.
+"""Notify step for the scheduled workflows — email is the only delivery channel.
 
-Channels are opt-in: a channel is used only when its secret is present, so the
-repository stays green before the operator picks one. Consequences:
+Required Secrets (all optional; email is used only when they are complete):
 
-  * ServerChan            secrets.NOTIFY_SCT_KEY
-  * PushPlus              secrets.NOTIFY_PUSHPLUS_TOKEN
-  * GitHub Issue          always available (uses the built-in token)
-  * Email on escalation   secrets.NOTIFY_SMTP_HOST / PORT / USER / PASS / TO
+    NOTIFY_SMTP_HOST    SMTP 服务器，例如 smtp.qq.com / smtp.163.com
+    NOTIFY_SMTP_PORT    465（SSL）或 587（STARTTLS）；缺省 465
+    NOTIFY_SMTP_USER    发信账号（通常是完整邮箱地址）
+    NOTIFY_SMTP_PASS    授权码 / 应用专用密码（不是登录密码）
+    NOTIFY_SMTP_TO      收件地址
+    NOTIFY_SMTP_FROM    可选，缺省等于 SMTP_USER
 
-Streak rule: every failure increments a per-workflow counter stored in
-`.notify/state.json`; three consecutive failures escalate (issue + email) and
-reset the counter so an already-reported incident does not spam.
+Degradation when email is not configured (or the send fails):
+
+  1. GitHub Issue —— 零配置通道，用仓库自带的 token 建一条 issue，消息不丢。
+  2. Issue 也失败：打印 `mail=unconfigured/unavailable issue=FAILED` 并 exit 0，
+     绝不因为通知失败把工作流判成失败（通知是旁路，不是主任务）。
+
+三个连续失败升级：同一工作流连败 3 次，主题加 `[ALERT]` 前缀、正文多一行升级说明，
+然后计数归零，避免已经报过的问题反复轰炸。
 
 Env: STATUS, WF_NAME, TITLE, MESSAGE, RUN_URL, GITHUB_REPOSITORY, GH_TOKEN,
-     SCT_KEY, PUSHPLUS_TOKEN, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_TO
+     SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_TO, SMTP_FROM
 """
 
 import json
 import os
 import smtplib
 import sys
-import urllib.parse
-import urllib.request
 from email.message import EmailMessage
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATE = os.path.join(ROOT, ".notify", "state.json")
 ESCALATE_AT = 3
-FAIL_WORDS = ("failure", "cancelled", "timed_out")
+FAIL_WORDS = ("failure", "cancelled", "canceled", "timed_out", "timed_out")
 
 
 def load_state():
@@ -46,58 +50,58 @@ def save_state(state):
         fh.write("\n")
 
 
-def post_form(url, fields, timeout=20):
-    data = urllib.parse.urlencode(fields).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers={"User-Agent": "blog-notify/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.status, resp.read()[:200].decode("utf-8", "replace")
+def mail_config():
+    """Return (config, problems). config is None when email cannot be used."""
+    host = os.environ.get("SMTP_HOST", "").strip()
+    user = os.environ.get("SMTP_USER", "").strip()
+    password = os.environ.get("SMTP_PASS", "").strip()
+    to_addr = os.environ.get("SMTP_TO", "").strip()
+    missing = [name for name, value in
+               (("SMTP_HOST", host), ("SMTP_USER", user),
+                ("SMTP_PASS", password), ("SMTP_TO", to_addr)) if not value]
+    if missing:
+        return None, missing
+    return {
+        "host": host,
+        "port": int(os.environ.get("SMTP_PORT", "465") or 465),
+        "user": user,
+        "password": password,
+        "to": [a.strip() for a in to_addr.split(",") if a.strip()],
+        "sender": (os.environ.get("SMTP_FROM", "").strip() or user),
+    }, []
 
 
-def post_json(url, payload, timeout=20):
-    body = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=body, headers={
-        "Content-Type": "application/json", "User-Agent": "blog-notify/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.status, resp.read()[:200].decode("utf-8", "replace")
-
-
-def send_serverchan(title, body):
-    key = os.environ.get("SCT_KEY", "").strip()
-    if not key:
-        return None
+def send_mail(subject, body, cfg):
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = cfg["sender"]
+    msg["To"] = ", ".join(cfg["to"])
+    msg.set_content(body)
     try:
-        status, text = post_form("https://sctapi.ftqq.com/%s.send" % key,
-                                 {"title": title, "desp": body})
-        print("serverchan=http_%s %s" % (status, text))
+        if cfg["port"] == 465:
+            client = smtplib.SMTP_SSL(cfg["host"], cfg["port"], timeout=30)
+        else:
+            client = smtplib.SMTP(cfg["host"], cfg["port"], timeout=30)
+            client.starttls()
+        client.login(cfg["user"], cfg["password"])
+        client.send_message(msg)
+        client.quit()
+        print("mail=sent to=%s" % ",".join(cfg["to"]))
         return True
     except Exception as exc:  # noqa: BLE001
-        print("serverchan=FAILED %s" % exc, file=sys.stderr)
+        print("mail=FAILED %s" % exc, file=sys.stderr)
         return False
 
 
-def send_pushplus(title, body):
-    token = os.environ.get("PUSHPLUS_TOKEN", "").strip()
-    if not token:
-        return None
-    try:
-        status, text = post_json("https://www.pushplus.plus/send",
-                                 {"token": token, "title": title,
-                                  "content": body, "template": "txt"})
-        print("pushplus=http_%s %s" % (status, text))
-        return True
-    except Exception as exc:  # noqa: BLE001
-        print("pushplus=FAILED %s" % exc, file=sys.stderr)
-        return False
-
-
-def send_issue(title, body, labels):
-    """Issue channel: needs gh CLI (present on GitHub runners) and GH_TOKEN."""
+def send_issue(subject, body, labels):
+    """Fallback channel: needs gh CLI (present on runners) and GH_TOKEN."""
     import subprocess
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or ""
     if not repo or not token:
-        return None
-    cmd = ["gh", "issue", "create", "-R", repo, "--title", title, "--body", body]
+        print("issue=unconfigured (no repo/token)", file=sys.stderr)
+        return False
+    cmd = ["gh", "issue", "create", "-R", repo, "--title", subject, "--body", body]
     for label in labels:
         cmd += ["--label", label]
     try:
@@ -106,39 +110,10 @@ def send_issue(title, body, labels):
         if out.returncode == 0:
             print("issue=%s" % out.stdout.strip())
             return True
-        print("issue=FAILED %s" % (out.stderr.strip()[:300]), file=sys.stderr)
+        print("issue=FAILED %s" % out.stderr.strip()[:300], file=sys.stderr)
         return False
     except Exception as exc:  # noqa: BLE001
         print("issue=FAILED %s" % exc, file=sys.stderr)
-        return False
-
-
-def send_mail(subject, body):
-    host = os.environ.get("SMTP_HOST", "").strip()
-    to_addr = os.environ.get("SMTP_TO", "").strip()
-    user = os.environ.get("SMTP_USER", "").strip()
-    password = os.environ.get("SMTP_PASS", "").strip()
-    if not (host and to_addr and user and password):
-        return None
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    msg["From"] = user
-    msg["To"] = to_addr
-    msg.set_content(body)
-    try:
-        port = int(os.environ.get("SMTP_PORT", "465"))
-        if port == 465:
-            client = smtplib.SMTP_SSL(host, port, timeout=30)
-        else:
-            client = smtplib.SMTP(host, port, timeout=30)
-            client.starttls()
-        client.login(user, password)
-        client.send_message(msg)
-        client.quit()
-        print("mail=sent")
-        return True
-    except Exception as exc:  # noqa: BLE001
-        print("mail=FAILED %s" % exc, file=sys.stderr)
         return False
 
 
@@ -149,7 +124,7 @@ def main():
     message = (os.environ.get("MESSAGE") or "").strip()
     run_url = (os.environ.get("RUN_URL") or "").strip()
 
-    failed = any(w in status for w in FAIL_WORDS)
+    failed = any(word in status for word in FAIL_WORDS)
 
     state = load_state()
     entry = state["workflows"].setdefault(wf, {"failures": 0})
@@ -163,36 +138,36 @@ def main():
         entry["failures"] = 0
         entry["last_escalation"] = run_url
 
-    head = title or ("%s %s" % (wf, status))
+    subject = title or ("%s %s" % (wf, status))
+    if escalate:
+        subject = "[ALERT] %s" % subject
     body = "\n".join(x for x in [
         "工作流：%s" % wf,
         "结果：%s（连续失败 %d 次）" % (status, streak),
         message,
         "运行：%s" % run_url,
+        "" ,
+        "这封邮件由 blog 仓库的 notify 工作流发出；回复无效。",
     ] if x)
+    if escalate:
+        body += "\n\n这已经是连续第 %d 次失败，按约定升级报警。" % ESCALATE_AT
 
-    sent = []
-    if not failed:
-        for fn, name in ((send_serverchan, "serverchan"), (send_pushplus, "pushplus")):
-            if fn(head, body):
-                sent.append(name)
+    cfg, missing = mail_config()
+    delivered = []
+    if cfg:
+        if send_mail(subject, body, cfg):
+            delivered.append("mail")
     else:
-        for fn, name in ((send_serverchan, "serverchan"), (send_pushplus, "pushplus")):
-            if fn(head, body):
-                sent.append(name)
-        if send_issue(head, body, ["notify"]):
-            sent.append("issue")
-        if escalate:
-            if send_issue("[ALERT] %s 连续失败 %d 次" % (wf, streak),
-                          body + "\n\n这已经是第 %d 次连续失败，按约定升级报警。" % streak,
-                          ["notify", "alert"]):
-                sent.append("issue-alert")
-            if send_mail("[ALERT] %s 连续失败 %d 次" % (wf, streak), body):
-                sent.append("mail-alert")
+        print("mail=unconfigured missing=%s — 降级到 GitHub Issue"
+              % ",".join(missing), file=sys.stderr)
+
+    if not delivered:
+        labels = ["notify", "alert"] if escalate else ["notify"]
+        if send_issue(subject, body, labels):
+            delivered.append("issue")
 
     print("STATUS=%s streak=%d escalate=%s channels=%s"
-          % (status, streak, str(escalate).lower(), ",".join(sent) or "none"))
-
+          % (status, streak, str(escalate).lower(), ",".join(delivered) or "none"))
     save_state(state)
     print("CHANGED=true")
     return 0

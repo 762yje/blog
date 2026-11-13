@@ -41,9 +41,9 @@ gh api -X DELETE repos/762yje/blog/pages      # 彻底关掉 Pages（站点变 4
 | `daily-trending.yml` | 每天 08:00（CST） | 抓 GitHub 当日星标增长最快的 10 个新仓库，生成 `posts/trending-<date>.md/.html` 并插卡片 |
 | `weekly-digest.yml` | 周二/四/六 09:00（CST） | 抓 6 个公开技术源，生成 `digest/<date>.md` + `docs/self-review/<date>.md` |
 | `compile-request.yml` | 手动 | 在 `windows-latest` 上编译公开仓库源码，打包 + sha256，传 Release 并回传下载链接 |
-| `tool-release-watch.yml` | 周一 11:00（CST） | 盯 ripgrep / fd / fzf 的 tag，变了自己编译成 Windows 免安装版，传私库 `tools-latest` |
+| `tool-release-watch.yml` | 周一 11:00（CST） | 盯 ripgrep / fd / fzf / jq 的上游 tag，变了自己编译成 Windows 免安装版（jq 走 MSYS2 UCRT64 autotools），传私库 `tools-latest` 并同步 `tools/manifest.json` |
 | `housekeeping.yml` | 每月 1 日 12:00（CST） | 清 30 天前的 Artifacts、旧 run、旧 `build-*` release（保留最近 3 个） |
-| `notify.yml` | 被上面几个 `workflow_call` | 推送结果；同一工作流连续失败 3 次升级成 `[ALERT]` issue（+ 邮件，若配了 SMTP） |
+| `notify.yml` | 被上面几个 `workflow_call` | 邮件通知；同一工作流连续失败 3 次升级成 `[ALERT]` |
 
 本机手动跑一次：
 
@@ -60,6 +60,17 @@ GH_TOKEN=$(gh auth token) python3 tools/trending.py
 python3 tools/digest.py
 ```
 
-## 通知（可选）
+## 通知（邮件）
 
-`notify.yml` 里任一通道没配也不影响其它通道：GitHub Issue 通道零配置可用，Server酱 / PushPlus / 邮件各自需要同名 Secrets（见仓库 Actions 设置）。
+通道已收敛为**邮件**一项（Server酱 / PushPlus 已下线）。配齐下列 Secrets 即可收信，成功与失败都发：
+
+| Secret | 说明 |
+|---|---|
+| `NOTIFY_SMTP_HOST` | SMTP 服务器，如 `smtp.qq.com` |
+| `NOTIFY_SMTP_PORT` | 端口，缺省 465（465 走 `SMTP_SSL`，其他端口走 STARTTLS） |
+| `NOTIFY_SMTP_USER` | 登录账号（通常就是发件地址） |
+| `NOTIFY_SMTP_PASS` | 邮箱授权码（不是登录密码） |
+| `NOTIFY_SMTP_TO` | 收件地址，多个用英文逗号分隔 |
+| `NOTIFY_SMTP_FROM` | 可选，发件人显示地址，缺省同 `NOTIFY_SMTP_USER` |
+
+降级规则：邮件未配或发送失败 → 改为建一条带 `notify` 标签的 GitHub Issue（零配置通道，消息不丢）；两者都不成只打日志，通知失败绝不会把业务工作流判成 failure。同一工作流连续失败 3 次，主题加 `[ALERT]` 后计数归零防轰炸。

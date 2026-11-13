@@ -87,11 +87,4 @@ jobs:
       title: 每周技术摘要
       message: ${{ needs.digest.outputs.message }}
       run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-    secrets:
-      NOTIFY_SCT_KEY: ${{ secrets.NOTIFY_SCT_KEY }}
-      NOTIFY_PUSHPLUS_TOKEN: ${{ secrets.NOTIFY_PUSHPLUS_TOKEN }}
-      NOTIFY_SMTP_HOST: ${{ secrets.NOTIFY_SMTP_HOST }}
-      NOTIFY_SMTP_PORT: ${{ secrets.NOTIFY_SMTP_PORT }}
-      NOTIFY_SMTP_USER: ${{ secrets.NOTIFY_SMTP_USER }}
-      NOTIFY_SMTP_PASS: ${{ secrets.NOTIFY_SMTP_PASS }}
-      NOTIFY_SMTP_TO: ${{ secrets.NOTIFY_SMTP_TO }}
+    secrets: inherit

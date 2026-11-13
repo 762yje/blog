@@ -1,11 +1,12 @@
-# notify.yml — notification fan-out shared by this repo's scheduled workflows.
+# notify.yml — 通知扇出，被本仓库各定时工作流用 workflow_call 复用。
 #
-# Caller passes the *result* of its work job; this workflow decides what to send.
-# A channel is used only when its secret exists, so nothing breaks before the
-# operator picks one. The GitHub Issue channel needs no secret at all.
+# 通道已收敛为「邮件」一项（Server酱 / PushPlus 已下线）：
+#   - 邮件可用（NOTIFY_SMTP_* 五个 secrets 齐全）→ 发邮件，成功与失败都发。
+#   - 邮件未配置 / 发送失败 → 降级建一条 GitHub Issue（零配置通道），消息不丢。
+#   - 两者都不成 → 只打日志，绝不让通知失败把工作流判成 failure。
 #
-# Three consecutive failures of the same workflow escalate to an [ALERT] issue
-# plus (when SMTP secrets exist) an email, then the streak resets.
+# 同一工作流连续失败 3 次：主题加 [ALERT]，正文附升级说明，然后计数归零防轰炸。
+# 计数器落在 .notify/state.json，由本工作流自己提交回仓库（带 [skip ci]）。
 
 name: notify
 
@@ -13,33 +14,29 @@ on:
   workflow_call:
     inputs:
       workflow_name:
-        description: name used as the streak key
+        description: 连续失败计数的键（一般用调用方工作流名）
         required: true
         type: string
       status:
-        description: result of the caller's work job (success / failure / cancelled)
+        description: 调用方工作结果（success / failure / cancelled）
         required: true
         type: string
       title:
-        description: headline shown in the notification
+        description: 通知标题（留空则由工作流名 + 结果拼出来）
         required: false
         type: string
         default: ''
       message:
-        description: one-line detail
+        description: 一行细节
         required: false
         type: string
         default: ''
       run_url:
-        description: link to the caller's run
+        description: 调用方的 run 链接
         required: false
         type: string
         default: ''
     secrets:
-      NOTIFY_SCT_KEY:
-        required: false
-      NOTIFY_PUSHPLUS_TOKEN:
-        required: false
       NOTIFY_SMTP_HOST:
         required: false
       NOTIFY_SMTP_PORT:
@@ -50,12 +47,14 @@ on:
         required: false
       NOTIFY_SMTP_TO:
         required: false
+      NOTIFY_SMTP_FROM:
+        required: false
 
 permissions:
   contents: write
   issues: write
 
-# Serialize the streak file: two failing workflows must not race on it.
+# 串行化计数器文件：两个同时失败的工作流不能在这里抢写。
 concurrency:
   group: notify-state
   cancel-in-progress: false
@@ -82,13 +81,12 @@ jobs:
           TITLE: ${{ inputs.title }}
           MESSAGE: ${{ inputs.message }}
           RUN_URL: ${{ inputs.run_url }}
-          SCT_KEY: ${{ secrets.NOTIFY_SCT_KEY }}
-          PUSHPLUS_TOKEN: ${{ secrets.NOTIFY_PUSHPLUS_TOKEN }}
           SMTP_HOST: ${{ secrets.NOTIFY_SMTP_HOST }}
           SMTP_PORT: ${{ secrets.NOTIFY_SMTP_PORT }}
           SMTP_USER: ${{ secrets.NOTIFY_SMTP_USER }}
           SMTP_PASS: ${{ secrets.NOTIFY_SMTP_PASS }}
           SMTP_TO: ${{ secrets.NOTIFY_SMTP_TO }}
+          SMTP_FROM: ${{ secrets.NOTIFY_SMTP_FROM }}
         run: |
           set -uo pipefail
           python3 tools/notify.py | tee notify.out
