@@ -1,0 +1,15 @@
+name: zz-probe
+on:
+  workflow_dispatch:
+jobs:
+  p:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo probe
+  n:
+    needs: p
+    uses: ./.github/workflows/notify.yml
+    with:
+      workflow_name: zz-probe
+      status: success
+    secrets: inherit
