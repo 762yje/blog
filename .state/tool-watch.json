@@ -8,5 +8,15 @@
     "tag": "v0.75.0",
     "updated_at": "2026-11-13T12:20:42Z",
     "uploaded": false
+  },
+  "jq": {
+    "asset": "dsh-jq-1.8.2-windows-x64.zip",
+    "exe_path": "jq.exe",
+    "repo": "jqlang/jq",
+    "sha256": "02c5669c635c924fdc1f3c9ebf902ee2a7f23f200b8fb8b9d1d1e5f14f477d52",
+    "size": 416912,
+    "tag": "jq-1.8.2",
+    "updated_at": "2026-11-13T12:38:39Z",
+    "uploaded": false
   }
 }
