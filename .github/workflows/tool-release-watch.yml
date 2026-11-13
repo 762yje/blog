@@ -100,7 +100,7 @@ jobs:
             repo: jqlang/jq
             kind: msys2
             exe: jq.exe
-            source: dist-jq
+            source: dist-jq/jq.exe
     env:
       PRIVATE_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
     steps:
