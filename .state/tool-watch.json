@@ -30,13 +30,13 @@
     "uploaded": false
   },
   "ripgrep": {
-    "asset": "dsh-ripgrep-15.2.0-windows-x64.zip",
+    "asset": "dsh-ripgrep-16.0.0-windows-x64.zip",
     "exe_path": "rg.exe",
     "repo": "BurntSushi/ripgrep",
-    "sha256": "d8367421bede92de6a0a0918c594f6299ca93518c254067f3a0eb7c03c2e0cb4",
-    "size": 1913225,
-    "tag": "15.2.0",
-    "updated_at": "2026-11-16T03:58:45Z",
+    "sha256": "252f01ab6298c503f67e50ff9083e7bfe1b19cd8ba41c6f3acf27ba843748bb3",
+    "size": 1963114,
+    "tag": "16.0.0",
+    "updated_at": "2026-11-23T03:54:05Z",
     "uploaded": false
   }
 }
